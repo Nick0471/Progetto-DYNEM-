@@ -37,27 +37,22 @@ class ArcadeController:
 
         target_accel = 0.0
         target_brake = 0.0
-        steer_input = 0.0
+        steer_target = 0.0
 
         if self.joystick:
             # ========================
-            # LETTURA INPUT CONTROLLER (Mapping Xbox 360 / DS4Windows)
+            # LETTURA INPUT CONTROLLER
             # ========================
-            # Asse 0: Levetta Sinistra X (Sinistra = -1.0, Destra = 1.0)
-            # Asse 4: Grilletto Sinistro L2 (-1.0 rilasciato, 1.0 premuto)
-            # Asse 5: Grilletto Destro R2 (-1.0 rilasciato, 1.0 premuto)
-            
-            # --- STEERING ---
-            # Moltiplico per -0.6 per mantenere la stessa scala del tuo codice originale 
-            # (dove Left era +0.6 e Right era -0.6)
             raw_steer = self.joystick.get_axis(0)
-            if abs(raw_steer) > 0.1: # Deadzone iniziale della levetta
-                steer_input = -raw_steer * 0.6 
+            
+            # Deadzone iniziale (0.05) per evitare movimenti involontari al centro
+            if abs(raw_steer) > 0.05: 
+                # Moltiplichiamo per 0.8: il fondo corsa della levetta (-1.0 o +1.0) 
+                # restituirà esattamente -0.8 o +0.8
+                steer_target = -raw_steer * 0.8 
 
             # --- ACCELERATORE (R2) ---
-            # Pygame legge i grilletti da -1 a 1. Li convertiamo da 0 a 1.
             rt = self.joystick.get_axis(5)
-            # Ignora valori falsi prima della prima pressione
             if rt > -0.99: 
                 target_accel = (rt + 1.0) / 2.0
 
@@ -67,7 +62,6 @@ class ArcadeController:
                 target_brake = (lt + 1.0) / 2.0
 
             # --- MARCE (L1 / R1) ---
-            # Tasto 4 = L1 (Scala marcia), Tasto 5 = R1 (Sali marcia)
             btn_up = self.joystick.get_button(0)
             btn_down = self.joystick.get_button(3)
 
@@ -80,42 +74,22 @@ class ArcadeController:
             self.gear_down_pressed = btn_down
 
         # ========================
-        # ACCELERAZIONE SMOOTH
+        # APPLICAZIONE DEI COMANDI
         # ========================
-        self.state['accel'] += (target_accel - self.state['accel']) * 0.1
+        # STERZO: Nessuno smoothing, risposta immediata
+        self.state['steer'] = steer_target
 
-        # ========================
-        # FRENO SMOOTH
-        # ========================
+        # PEDALI: Smoothing per una risposta pronta ma fluida
+        self.state['accel'] += (target_accel - self.state['accel']) * 0.5
         self.state['brake'] += (target_brake - self.state['brake']) * 0.2
 
         # ========================
-        # STEERING LOGIC (Originale)
+        # CLAMPING & LIMITI
         # ========================
-        # LIMITE VELOCITÀ
-        max_steer = max(0.25, 1.0 - speed / 200.0)
-        steer_input *= max_steer
-
-        # SE NON STAI STERZANDO → VAI DRITTO
-        if abs(steer_input) < 0.01:
-            steer_target = 0.0
-        else:
-            stability = angle * 0.3
-            steer_target = steer_input - stability
-
-        # SMOOTH
-        self.state['steer'] += (steer_target - self.state['steer']) * 0.2
-
-        # DEAD ZONE
-        if abs(self.state['steer']) < 0.02:
-            self.state['steer'] = 0.0
-
-        # CLAMPING
-        self.state['steer'] = max(-1.0, min(1.0, self.state['steer']))
+        # Assicura che i valori inviati a TORCS rispettino i nuovi limiti
+        self.state['steer'] = max(-0.7, min(0.7, self.state['steer']))
         self.state['accel'] = max(0.0, min(1.0, self.state['accel']))
         self.state['brake'] = max(0.0, min(1.0, self.state['brake']))
-
-        # MARCE LIMITI
         self.state['gear'] = max(-1, min(6, self.state['gear']))
 
 
@@ -130,7 +104,7 @@ def main():
     client.get_servers_input()
 
     print("Arcade driving mode attivo con CONTROLLER")
-    print("Levetta SX per sterzare, R2 Accelera, L2 Frena, R1/L1 per le marce")
+    print("Levetta SX per sterzare (Limite: +/- 0.8), R2 Accelera, L2 Frena, R1/L1 per le marce")
 
     # CSV log
     log_csv = open("manual_log.csv", "w")

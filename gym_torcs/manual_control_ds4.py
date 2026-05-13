@@ -88,6 +88,17 @@ def save_to_disk(buffer, headers, lap_number, lap_time):
     print(f"\n>>> [SALVATO] Giro {lap_number} | Tempo: {time_str}")
 
 def manual_recording():
+    # --- LOGICA DI REGISTRAZIONE E VALIDAZIONE (SETTING F1) ---
+    # 1. SOGLIA CORDOLO INTEGRATA: trackPos tra 1.0 e 1.3 è considerato traiettoria valida.
+    #    L'auto può salire sui cordoli senza che il giro venga marcato come 'is_dirty'.
+    # 2. FUORI PISTA = RESET IMMEDIATO: Se abs(trackPos) > 1.3 (erba o sabbia), il giro 
+    #    viene annullato (is_dirty = True) e viene inviato il comando di RESTART al server.
+    # 3. GESTIONE DANNI: Qualsiasi incremento di 'damage' (urti contro muri o auto) 
+    #    marca il giro come 'sporco'. Il file non verrà salvato a fine giro, ma la 
+    #    gara continua senza reset automatico per permettere di fare pratica.
+    # 4. SALVATAGGIO AUTOMATICO: Ogni giro completato che non sia 'sporco' viene 
+    #    salvato su disco. Il nome del file include il tempo cronometrato (MM-SS-mmm).
+
     pygame.init()
     pygame.joystick.init()
     if pygame.joystick.get_count() == 0:
@@ -97,7 +108,7 @@ def manual_recording():
     js.init()
 
     so = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    so.settimeout(1)
+    so.settimeout(1.0)
     initmsg = f"{SID}(init -45 -19 -12 -7 -4 -2.5 -1.7 -1 -.5 0 .5 1 1.7 2.5 4 7 12 19 45)"
     so.sendto(initmsg.encode(), (HOST, PORT))
 
@@ -105,7 +116,7 @@ def manual_recording():
         try:
             sockdata, _ = so.recvfrom(DATA_SIZE)
             if '***identified***' in sockdata.decode():
-                print(">>> SISTEMA PRONTO. GUIDA SUI CORDOLI MA EVITA L'ERBA!")
+                print(">>> CONNESSO A TORCS. PRONTO A REGISTRARE.")
                 break
         except:
             so.sendto(initmsg.encode(), (HOST, PORT))
@@ -121,7 +132,6 @@ def manual_recording():
     headers = None
     t0 = time.time()
     lap_counter = 0
-    waiting_for_restart = False
 
     try:
         while True:
@@ -129,69 +139,77 @@ def manual_recording():
                 sockdata, _ = so.recvfrom(DATA_SIZE)
                 sockstr = sockdata.decode()
                 
+                # SE RICEVIAMO RESTART DAL SERVER
                 if '***restart***' in sockstr:
-                    print("\n[RESET] Gara riavviata.")
+                    print("\n[RESET COMPLETO] Il server è pronto. Riparto...")
                     lap_buffer, is_dirty, prev_lap_time = [], False, 0.0
                     initial_damage = None
                     R.d['meta'] = 0
-                    waiting_for_restart = False
+                    # Rimandiamo l'init per sicurezza dopo un restart
+                    so.sendto(initmsg.encode(), (HOST, PORT))
                     continue
                 
                 S.parse_server_str(sockstr)
-            except: continue
-
-            if waiting_for_restart:
-                so.sendto(repr(R).encode(), (HOST, PORT))
+            except socket.timeout:
+                # Se il server non risponde (schermata blu), proviamo a rimandare l'init
+                # o il comando di restart se eravamo usciti
+                if R.d['meta'] == 1:
+                    so.sendto(repr(R).encode(), (HOST, PORT))
                 continue
 
             if initial_damage is None:
                 initial_damage = S.d.get('damage', 0)
 
-            # --- LOGICA F1: CORDOLO VS FUORI PISTA ---
+            # --- LOGICA FUORI PISTA E RESET ---
             track_pos = abs(S.d.get('trackPos', 0))
-            
-            # Se sei tra 1.0 e 1.3 sei sul cordolo -> NON facciamo nulla, il giro resta pulito.
-            
-            # Se superi il limite del cordolo (es. 1.3) -> Giro SPORCO + RESTART
             if track_pos > TRACK_LIMIT:
-                print(f"\n[!!!] FUORI PISTA ({track_pos:.2f}). Giro annullato. Reset...")
-                is_dirty = True # Marca come sporco
+                print(f"\n[!!!] FUORI PISTA ({track_pos:.2f}). Invio RESTART...")
+                is_dirty = True
                 R.d['meta'] = 1
-                waiting_for_restart = True
+                # Inviamo il restart, svuotiamo il buffer e aspettiamo il segnale del server
                 so.sendto(repr(R).encode(), (HOST, PORT))
+                lap_buffer, prev_lap_time = [], 0.0
                 continue
 
             # --- FINE GIRO ---
             cur_time = S.d.get('curLapTime', 0)
             if cur_time < prev_lap_time and prev_lap_time > 10.0:
                 last_lap_time = S.d.get('lastLapTime', 0)
-                # Salva solo se non hai preso danni e non sei uscito oltre il cordolo
                 if not is_dirty and len(lap_buffer) > 500:
                     lap_counter += 1
                     save_to_disk(lap_buffer, headers, lap_counter, last_lap_time)
                 else:
                     print(f">>> [SCARTATO] Giro non valido (Danni o Fuori Pista).")
-                
                 lap_buffer, is_dirty = [], False
                 initial_damage = S.d.get('damage', 0)
-
             prev_lap_time = cur_time
 
-            # Controllo Danni (se colpisci un muro, il giro è sporco)
+            # Controllo Danni
             if (S.d.get('damage', 0) - initial_damage) > 1.0:
-                if not is_dirty:
-                    print("\n[!] DANNI RILEVATI - Giro sporco.")
+                if not is_dirty: print("\n[!] GIRO SPORCO (Danni).")
                 is_dirty = True
 
-            # --- CONTROLLI ---
+            # --- LOGICA DI GUIDA ---
             speed = S.d.get('speedX', 0)
             steer, accel, brake = get_joystick_input(js, speed)
-            
+
+            # TCS & ABS
+            wheel_vel = S.d.get('wheelSpinVel', [0,0,0,0])
+            if len(wheel_vel) == 4:
+                if (wheel_vel[2]+wheel_vel[3]) - (wheel_vel[0]+wheel_vel[1]) > 15: accel *= 0.5
+                if brake > 0.1 and speed > 15 and (wheel_vel[0]+wheel_vel[1])/2.0 < 5: brake *= 0.1
+
+            # Steering Priority
+            if brake > 0.1 and abs(steer) > 0.15: 
+                brake *= (1.0 - abs(steer)*0.8)
+
+            # Cambio Marce
             target_gear = 1
             for i, th in enumerate([0, 45, 90, 145, 200, 250]):
                 if speed > th: target_gear = i + 1
-            
-            R.d['steer'], R.d['accel'], R.d['brake'], R.d['gear'] = steer, accel, brake, target_gear
+            gear = S.d.get('gear', 1) if abs(steer) > 0.4 else target_gear
+
+            R.d['steer'], R.d['accel'], R.d['brake'], R.d['gear'] = steer, accel, brake, gear
 
             # --- REGISTRAZIONE ---
             if headers is None:
@@ -202,7 +220,7 @@ def manual_recording():
                     if isinstance(val, list): headers.extend([f"{k}_{i}" for i in range(len(val))])
                     else: headers.append(k)
 
-            row = [time.time()-t0, steer, accel, brake, target_gear]
+            row = [time.time()-t0, steer, accel, brake, gear]
             for k in sorted(S.d.keys()):
                 if k in KEYS_TO_IGNORE: continue
                 val = S.d[k]
@@ -210,26 +228,13 @@ def manual_recording():
                 else: row.append(val)
             lap_buffer.append(row)
 
+            # Invio dati al server
             so.sendto(repr(R).encode(), (HOST, PORT))
 
-    except KeyboardInterrupt:
-        print("\nUscita.")
+    except KeyboardInterrupt: print("\nUscita.")
     finally:
         so.close()
         pygame.quit()
 
 if __name__ == "__main__":
     manual_recording()
-
-
-
-# --- LOGICA DI REGISTRAZIONE E VALIDAZIONE (SETTING F1) ---
-# 1. SOGLIA CORDOLO INTEGRATA: trackPos tra 1.0 e 1.3 è considerato traiettoria valida.
-#    L'auto può salire sui cordoli senza che il giro venga marcato come 'is_dirty'.
-# 2. FUORI PISTA = RESET IMMEDIATO: Se abs(trackPos) > 1.3 (erba o sabbia), il giro 
-#    viene annullato (is_dirty = True) e viene inviato il comando di RESTART al server.
-# 3. GESTIONE DANNI: Qualsiasi incremento di 'damage' (urti contro muri o auto) 
-#    marca il giro come 'sporco'. Il file non verrà salvato a fine giro, ma la 
-#    gara continua senza reset automatico per permettere di fare pratica.
-# 4. SALVATAGGIO AUTOMATICO: Ogni giro completato che non sia 'sporco' viene 
-#    salvato su disco. Il nome del file include il tempo cronometrato (MM-SS-mmm).

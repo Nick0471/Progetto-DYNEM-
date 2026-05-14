@@ -1,3 +1,7 @@
+# Ho modificato il tuo script rimuovendo la logica automatica e implementando il cambio manuale. 
+# Ho aggiunto i pulsanti per salire di marcia (R1) e scendere di marcia (L1), 
+# standard per il controller DualShock 4.
+
 import pygame
 import socket
 import sys
@@ -23,6 +27,8 @@ if not os.path.exists(DATASET_DIR):
 AXIS_STEER = 0
 AXIS_ACCEL = 5
 AXIS_BRAKE = 4
+BUTTON_GEAR_DOWN = 4 # Solitamente L1 su DS4
+BUTTON_GEAR_UP = 5   # Solitamente R1 su DS4
 
 class ServerState():
     def __init__(self):
@@ -56,7 +62,7 @@ class DriverAction():
         return out
 
 def get_joystick_input(joystick, current_speed):
-    pygame.event.pump()
+    # event.get() viene chiamato nel loop principale per leggere anche i tasti
     raw_steer = -joystick.get_axis(AXIS_STEER)
     if abs(raw_steer) < 0.02:
         steer = 0.0
@@ -84,11 +90,6 @@ def save_to_disk(buffer, headers, lap_number, lap_time):
     print(f"\n>>> [SALVATO] Giro {lap_number} | Tempo: {time_str}")
 
 def manual_recording():
-    # --- LOGICA DI REGISTRAZIONE E VALIDAZIONE (SETTING F1) ---
-    # 1. SOGLIA CORDOLO: trackPos < 1.3 OK.
-    # 2. FUORI PISTA/DANNI: Reset automatico.
-    # 3. FINE GIRO: Dopo il salvataggio, riparte da fermo (meta 1).
-
     pygame.init()
     pygame.joystick.init()
     if pygame.joystick.get_count() == 0:
@@ -122,19 +123,29 @@ def manual_recording():
     headers = None
     t0 = time.time()
     lap_counter = 0
+    current_gear = 1 # Marcia iniziale
 
     try:
         while True:
+            # --- GESTIONE INPUT E PULSANTI CAMBIO ---
+            for event in pygame.event.get():
+                if event.type == pygame.JOYBUTTONDOWN:
+                    if event.button == BUTTON_GEAR_UP:
+                        current_gear = min(6, current_gear + 1)
+                    elif event.button == BUTTON_GEAR_DOWN:
+                        current_gear = max(-1, current_gear - 1) # -1 è la retromarcia in TORCS
+
             try:
                 sockdata, _ = so.recvfrom(DATA_SIZE)
                 sockstr = sockdata.decode()
                 
-                # --- GESTIONE RESTART (Fuori Pista o Fine Giro) ---
+                # --- GESTIONE RESTART ---
                 if '***restart***' in sockstr:
                     print("\n[RESET] Caricamento pista in corso...")
                     lap_buffer, is_dirty, prev_lap_time = [], False, 0.0
                     initial_damage = None
                     R.d['meta'] = 0
+                    current_gear = 1 # Resetta la marcia alla partenza
                     t0 = time.time() 
 
                     connected = False
@@ -180,12 +191,11 @@ def manual_recording():
                     lap_counter += 1
                     save_to_disk(lap_buffer, headers, lap_counter, last_lap_time)
                     
-                    # TRIGGER RESTART DOPO SALVATAGGIO
                     print(">>> [AUTO-RESTART] Giro completato. Ritorno alla partenza...")
                     R.d['meta'] = 1
                     so.sendto(repr(R).encode(), (HOST, PORT))
                     lap_buffer, is_dirty, prev_lap_time = [], False, 0.0
-                    continue # Salta il resto e aspetta il segnale di restart
+                    continue 
                 else:
                     print(f">>> [SCARTATO] Giro non valido.")
                 
@@ -211,25 +221,8 @@ def manual_recording():
             if brake > 0.1 and abs(steer) > 0.15: 
                 brake *= (1.0 - abs(steer)*0.8)
 
-            #target_gear = 1
-            #for i, th in enumerate([0, 45, 90, 145, 200, 260]):
-            #    if speed > th: target_gear = i + 1
-            #gear = S.d.get('gear', 1) if abs(steer) > 0.4 else target_gear
-
-            # --- CAMBIO AUTOMATICO (Logica Snakeoil) ---
-            target_gear = 1
-            if speed > 50:
-                target_gear = 2
-            if speed > 90:
-                target_gear = 3
-            if speed > 150:
-                target_gear = 4
-            if speed > 200:
-                target_gear = 5
-            if speed > 260:
-                target_gear = 6
-
-            R.d['steer'], R.d['accel'], R.d['brake'], R.d['gear'] = steer, accel, brake, gear
+            # Assegna i controlli finali incluso il cambio manuale
+            R.d['steer'], R.d['accel'], R.d['brake'], R.d['gear'] = steer, accel, brake, current_gear
 
             # --- REGISTRAZIONE ---
             if headers is None:
@@ -240,7 +233,7 @@ def manual_recording():
                     if isinstance(val, list): headers.extend([f"{k}_{i}" for i in range(len(val))])
                     else: headers.append(k)
 
-            row = [time.time()-t0, steer, accel, brake, gear]
+            row = [time.time()-t0, steer, accel, brake, current_gear]
             for k in sorted(S.d.keys()):
                 if k in KEYS_TO_IGNORE: continue
                 val = S.d[k]

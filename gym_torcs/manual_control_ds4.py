@@ -218,16 +218,9 @@ def manual_recording():
 
             # --- CAMBIO AUTOMATICO (Logica Snakeoil) ---
             target_gear = 1
-            if speed > 50:
-                target_gear = 2
-            if speed > 90:
-                target_gear = 3
-            if speed > 150:
-                target_gear = 4
-            if speed > 200:
-                target_gear = 5
-            if speed > 260:
-                target_gear = 6
+            for i, th in enumerate([0, 45, 90, 145, 200, 280]):
+                if speed > th: target_gear = i + 1
+            gear = S.d.get('gear', 1) if abs(steer) > 0.4 else target_gear
 
             R.d['steer'], R.d['accel'], R.d['brake'], R.d['gear'] = steer, accel, brake, gear
 

@@ -11,10 +11,6 @@ HOST = 'localhost'
 PORT = 3001
 SID = 'SCR'
 DATA_SIZE = 2**17
-
-# LOGICA F1: 
-# Fino a 1.3 sei sul cordolo (OK)
-# Oltre 1.3 sei fuori pista (RESTART + GIRO SPORCO)
 TRACK_LIMIT = 1.3 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -90,14 +86,9 @@ def save_to_disk(buffer, headers, lap_number, lap_time):
 def manual_recording():
     # --- LOGICA DI REGISTRAZIONE E VALIDAZIONE (SETTING F1) ---
     # 1. SOGLIA CORDOLO INTEGRATA: trackPos tra 1.0 e 1.3 è considerato traiettoria valida.
-    #    L'auto può salire sui cordoli senza che il giro venga marcato come 'is_dirty'.
-    # 2. FUORI PISTA = RESET IMMEDIATO: Se abs(trackPos) > 1.3 (erba o sabbia), il giro 
-    #    viene annullato (is_dirty = True) e viene inviato il comando di RESTART al server.
-    # 3. GESTIONE DANNI: Qualsiasi incremento di 'damage' (urti contro muri o auto) 
-    #    marca il giro come 'sporco'. Il file non verrà salvato a fine giro, ma la 
-    #    gara continua senza reset automatico per permettere di fare pratica.
-    # 4. SALVATAGGIO AUTOMATICO: Ogni giro completato che non sia 'sporco' viene 
-    #    salvato su disco. Il nome del file include il tempo cronometrato (MM-SS-mmm).
+    # 2. FUORI PISTA = RESET IMMEDIATO: Se abs(trackPos) > 1.3, restart automatico.
+    # 3. GESTIONE DANNI: Qualsiasi danno marca il giro come sporco.
+    # 4. SALVATAGGIO AUTOMATICO: Ogni giro completato pulito viene salvato.
 
     pygame.init()
     pygame.joystick.init()
@@ -110,8 +101,9 @@ def manual_recording():
     so = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     so.settimeout(1.0)
     initmsg = f"{SID}(init -45 -19 -12 -7 -4 -2.5 -1.7 -1 -.5 0 .5 1 1.7 2.5 4 7 12 19 45)"
+    
+    # Primo collegamento
     so.sendto(initmsg.encode(), (HOST, PORT))
-
     while True:
         try:
             sockdata, _ = so.recvfrom(DATA_SIZE)
@@ -139,20 +131,34 @@ def manual_recording():
                 sockdata, _ = so.recvfrom(DATA_SIZE)
                 sockstr = sockdata.decode()
                 
-                # SE RICEVIAMO RESTART DAL SERVER
+                # --- GESTIONE RESTART AVANZATA ---
                 if '***restart***' in sockstr:
-                    print("\n[RESET COMPLETO] Il server è pronto. Riparto...")
+                    print("\n[RESET] Attesa ricaricamento pista...")
                     lap_buffer, is_dirty, prev_lap_time = [], False, 0.0
                     initial_damage = None
                     R.d['meta'] = 0
-                    # Rimandiamo l'init per sicurezza dopo un restart
-                    so.sendto(initmsg.encode(), (HOST, PORT))
+                    t0 = time.time() # Reset del tempo per il nuovo giro
+
+                    # Sotto-ciclo di riconnessione post-restart
+                    connected = False
+                    while not connected:
+                        so.sendto(initmsg.encode(), (HOST, PORT))
+                        try:
+                            # Timeout breve per non bloccare troppo il ciclo
+                            so.settimeout(0.5) 
+                            resp, _ = so.recvfrom(DATA_SIZE)
+                            if '***identified***' in resp.decode():
+                                print(">>> RIPARTENZA EFFETTUATA!")
+                                connected = True
+                                so.settimeout(1.0) # Ripristina timeout standard
+                        except (socket.timeout, ConnectionResetError):
+                            continue 
                     continue
                 
                 S.parse_server_str(sockstr)
-            except socket.timeout:
-                # Se il server non risponde (schermata blu), proviamo a rimandare l'init
-                # o il comando di restart se eravamo usciti
+            
+            except (socket.timeout, ConnectionResetError):
+                # Se siamo fuori strada e il server non risponde, continuiamo a mandare meta=1
                 if R.d['meta'] == 1:
                     so.sendto(repr(R).encode(), (HOST, PORT))
                 continue
@@ -160,13 +166,12 @@ def manual_recording():
             if initial_damage is None:
                 initial_damage = S.d.get('damage', 0)
 
-            # --- LOGICA FUORI PISTA E RESET ---
+            # --- LOGICA FUORI PISTA ---
             track_pos = abs(S.d.get('trackPos', 0))
             if track_pos > TRACK_LIMIT:
                 print(f"\n[!!!] FUORI PISTA ({track_pos:.2f}). Invio RESTART...")
                 is_dirty = True
                 R.d['meta'] = 1
-                # Inviamo il restart, svuotiamo il buffer e aspettiamo il segnale del server
                 so.sendto(repr(R).encode(), (HOST, PORT))
                 lap_buffer, prev_lap_time = [], 0.0
                 continue
@@ -189,21 +194,18 @@ def manual_recording():
                 if not is_dirty: print("\n[!] GIRO SPORCO (Danni).")
                 is_dirty = True
 
-            # --- LOGICA DI GUIDA ---
+            # --- LOGICA DI GUIDA ORIGINALE ---
             speed = S.d.get('speedX', 0)
             steer, accel, brake = get_joystick_input(js, speed)
 
-            # TCS & ABS
             wheel_vel = S.d.get('wheelSpinVel', [0,0,0,0])
             if len(wheel_vel) == 4:
                 if (wheel_vel[2]+wheel_vel[3]) - (wheel_vel[0]+wheel_vel[1]) > 15: accel *= 0.5
                 if brake > 0.1 and speed > 15 and (wheel_vel[0]+wheel_vel[1])/2.0 < 5: brake *= 0.1
 
-            # Steering Priority
             if brake > 0.1 and abs(steer) > 0.15: 
                 brake *= (1.0 - abs(steer)*0.8)
 
-            # Cambio Marce
             target_gear = 1
             for i, th in enumerate([0, 45, 90, 145, 200, 250]):
                 if speed > th: target_gear = i + 1
@@ -228,7 +230,6 @@ def manual_recording():
                 else: row.append(val)
             lap_buffer.append(row)
 
-            # Invio dati al server
             so.sendto(repr(R).encode(), (HOST, PORT))
 
     except KeyboardInterrupt: print("\nUscita.")

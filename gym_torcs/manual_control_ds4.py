@@ -85,10 +85,9 @@ def save_to_disk(buffer, headers, lap_number, lap_time):
 
 def manual_recording():
     # --- LOGICA DI REGISTRAZIONE E VALIDAZIONE (SETTING F1) ---
-    # 1. SOGLIA CORDOLO INTEGRATA: trackPos tra 1.0 e 1.3 è considerato traiettoria valida.
-    # 2. FUORI PISTA = RESET IMMEDIATO: Se abs(trackPos) > 1.3, restart automatico.
-    # 3. GESTIONE DANNI: Qualsiasi danno marca il giro come sporco.
-    # 4. SALVATAGGIO AUTOMATICO: Ogni giro completato pulito viene salvato.
+    # 1. SOGLIA CORDOLO: trackPos < 1.3 OK.
+    # 2. FUORI PISTA/DANNI: Reset automatico.
+    # 3. FINE GIRO: Dopo il salvataggio, riparte da fermo (meta 1).
 
     pygame.init()
     pygame.joystick.init()
@@ -102,7 +101,6 @@ def manual_recording():
     so.settimeout(1.0)
     initmsg = f"{SID}(init -45 -19 -12 -7 -4 -2.5 -1.7 -1 -.5 0 .5 1 1.7 2.5 4 7 12 19 45)"
     
-    # Primo collegamento
     so.sendto(initmsg.encode(), (HOST, PORT))
     while True:
         try:
@@ -131,26 +129,24 @@ def manual_recording():
                 sockdata, _ = so.recvfrom(DATA_SIZE)
                 sockstr = sockdata.decode()
                 
-                # --- GESTIONE RESTART AVANZATA ---
+                # --- GESTIONE RESTART (Fuori Pista o Fine Giro) ---
                 if '***restart***' in sockstr:
-                    print("\n[RESET] Attesa ricaricamento pista...")
+                    print("\n[RESET] Caricamento pista in corso...")
                     lap_buffer, is_dirty, prev_lap_time = [], False, 0.0
                     initial_damage = None
                     R.d['meta'] = 0
-                    t0 = time.time() # Reset del tempo per il nuovo giro
+                    t0 = time.time() 
 
-                    # Sotto-ciclo di riconnessione post-restart
                     connected = False
                     while not connected:
                         so.sendto(initmsg.encode(), (HOST, PORT))
                         try:
-                            # Timeout breve per non bloccare troppo il ciclo
                             so.settimeout(0.5) 
                             resp, _ = so.recvfrom(DATA_SIZE)
                             if '***identified***' in resp.decode():
-                                print(">>> RIPARTENZA EFFETTUATA!")
+                                print(">>> POSIZIONATO SULLA GRIGLIA. PARTI!")
                                 connected = True
-                                so.settimeout(1.0) # Ripristina timeout standard
+                                so.settimeout(1.0)
                         except (socket.timeout, ConnectionResetError):
                             continue 
                     continue
@@ -158,7 +154,6 @@ def manual_recording():
                 S.parse_server_str(sockstr)
             
             except (socket.timeout, ConnectionResetError):
-                # Se siamo fuori strada e il server non risponde, continuiamo a mandare meta=1
                 if R.d['meta'] == 1:
                     so.sendto(repr(R).encode(), (HOST, PORT))
                 continue
@@ -169,24 +164,34 @@ def manual_recording():
             # --- LOGICA FUORI PISTA ---
             track_pos = abs(S.d.get('trackPos', 0))
             if track_pos > TRACK_LIMIT:
-                print(f"\n[!!!] FUORI PISTA ({track_pos:.2f}). Invio RESTART...")
+                print(f"\n[!!!] FUORI PISTA ({track_pos:.2f}). Reset...")
                 is_dirty = True
                 R.d['meta'] = 1
                 so.sendto(repr(R).encode(), (HOST, PORT))
                 lap_buffer, prev_lap_time = [], 0.0
                 continue
 
-            # --- FINE GIRO ---
+            # --- LOGICA FINE GIRO + RESTART DA FERMO ---
             cur_time = S.d.get('curLapTime', 0)
             if cur_time < prev_lap_time and prev_lap_time > 10.0:
                 last_lap_time = S.d.get('lastLapTime', 0)
+                
                 if not is_dirty and len(lap_buffer) > 500:
                     lap_counter += 1
                     save_to_disk(lap_buffer, headers, lap_counter, last_lap_time)
+                    
+                    # TRIGGER RESTART DOPO SALVATAGGIO
+                    print(">>> [AUTO-RESTART] Giro completato. Ritorno alla partenza...")
+                    R.d['meta'] = 1
+                    so.sendto(repr(R).encode(), (HOST, PORT))
+                    lap_buffer, is_dirty, prev_lap_time = [], False, 0.0
+                    continue # Salta il resto e aspetta il segnale di restart
                 else:
-                    print(f">>> [SCARTATO] Giro non valido (Danni o Fuori Pista).")
+                    print(f">>> [SCARTATO] Giro non valido.")
+                
                 lap_buffer, is_dirty = [], False
                 initial_damage = S.d.get('damage', 0)
+            
             prev_lap_time = cur_time
 
             # Controllo Danni
@@ -194,7 +199,7 @@ def manual_recording():
                 if not is_dirty: print("\n[!] GIRO SPORCO (Danni).")
                 is_dirty = True
 
-            # --- LOGICA DI GUIDA ORIGINALE ---
+            # --- LOGICA GUIDA ---
             speed = S.d.get('speedX', 0)
             steer, accel, brake = get_joystick_input(js, speed)
 

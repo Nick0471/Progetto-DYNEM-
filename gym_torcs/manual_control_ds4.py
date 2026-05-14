@@ -212,7 +212,7 @@ def manual_recording():
                 brake *= (1.0 - abs(steer)*0.8)
 
             target_gear = 1
-            for i, th in enumerate([0, 45, 90, 145, 200, 260]):
+            for i, th in enumerate([0, 45, 90, 145, 200, 280]):
                 if speed > th: target_gear = i + 1
             gear = S.d.get('gear', 1) if abs(steer) > 0.4 else target_gear
 

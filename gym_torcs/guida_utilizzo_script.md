@@ -193,14 +193,14 @@ python step2_train_knn.py --max-index 3000
 
 > [!IMPORTANT]
 > TORCS deve essere **già avviato e in modalità Practice/Race** prima di lanciare questo script.
-> Il circuito deve essere lo stesso su cui hai registrato i dati (Alpine o altro).
+> Il circuito deve essere lo stesso su cui hai registrato i dati (Corkscrew).
 
 ### Sequenza di avvio
 
 ```
 1. Avvia TORCS
-2. Seleziona il circuito (es. alpine-1)
-3. Configura come Practice o Quick Race (1 avversario fittizio va bene)
+2. Seleziona il circuito (corkscrew)
+3. Configura come Practice o Quick Race
 4. Clicca "Accept" e poi START la gara
 5. TORCS si mette in pausa aspettando il client
 6. Apri un terminale e lancia step3

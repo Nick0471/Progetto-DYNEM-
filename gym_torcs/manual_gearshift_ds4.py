@@ -27,8 +27,8 @@ if not os.path.exists(DATASET_DIR):
 AXIS_STEER = 0
 AXIS_ACCEL = 5
 AXIS_BRAKE = 4
-BUTTON_GEAR_DOWN = 4 # Solitamente L1 su DS4
-BUTTON_GEAR_UP = 5   # Solitamente R1 su DS4
+BUTTON_GEAR_DOWN = 0 # Solitamente L1 su DS4
+BUTTON_GEAR_UP = 1   # Solitamente R1 su DS4
 
 class ServerState():
     def __init__(self):

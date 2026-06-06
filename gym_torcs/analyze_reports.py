@@ -12,7 +12,7 @@ def analyze_step1():
     print("  ANALISI REPORT STEP 1 (Preparazione Dati)")
     print("=" * 50)
     
-    path = os.path.join(BASE_DIR, "report_step1.json")
+    path = os.path.join(BASE_DIR, "reports", "report_step1.json")
     if not os.path.exists(path):
         print(f"File non trovato: {path}")
         return False
@@ -45,7 +45,7 @@ def analyze_step2():
     print("  ANALISI REPORT STEP 2 (Addestramento KNN)")
     print("=" * 50)
     
-    path = os.path.join(BASE_DIR, "report_step2.json")
+    path = os.path.join(BASE_DIR, "reports", "report_step2.json")
     if not os.path.exists(path):
         print(f"File non trovato: {path}")
         return False

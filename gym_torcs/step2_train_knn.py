@@ -349,7 +349,7 @@ def main():
             for col, res in results.items()
         }
     }
-    report_path = os.path.join(BASE_DIR, "report_step2.json")
+    report_path = os.path.join(BASE_DIR, "reports", "report_step2.json")
     with open(report_path, "w") as f:
         json.dump(report, f, indent=4)
     print(f"\n  Resoconto salvato in: {report_path}")

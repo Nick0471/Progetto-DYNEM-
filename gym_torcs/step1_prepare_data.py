@@ -293,7 +293,7 @@ def main():
         "medie_target": df[TARGET_COLS].mean().to_dict(),
         "std_target": df[TARGET_COLS].std().to_dict()
     }
-    report_path = os.path.join(BASE_DIR, "report_step1.json")
+    report_path = os.path.join(BASE_DIR, "reports", "report_step1.json")
     with open(report_path, "w") as f:
         json.dump(report, f, indent=4)
     print(f"\n  Resoconto salvato in: {report_path}")

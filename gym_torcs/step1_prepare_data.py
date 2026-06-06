@@ -72,10 +72,10 @@ TARGET_COLS = ["target_steer", "target_accel", "target_brake"]
 # ─────────────────────────────────────────────
 def load_all_laps(folder: str) -> pd.DataFrame:
     """Carica tutti i CSV di giro presenti nella cartella e li unisce."""
-    files = sorted(glob.glob(os.path.join(folder, "lap_*.csv")))
+    files = sorted(glob.glob(os.path.join(folder, "*.csv")))
     if not files:
         raise FileNotFoundError(
-            f"Nessun file lap_*.csv trovato in: {folder}\n"
+            f"Nessun file *.csv trovato in: {folder}\n"
             "Esegui prima manual_control_ds4.py per registrare i giri."
         )
 

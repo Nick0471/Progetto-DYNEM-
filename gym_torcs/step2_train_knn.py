@@ -25,6 +25,7 @@ import os
 import sys
 import pickle
 import argparse
+import json
 
 # Forza stdout UTF-8 su Windows
 if sys.platform == "win32":
@@ -62,10 +63,8 @@ DEFAULT_ALGO      = "ball_tree"  # piu' veloce di "brute" su dataset medi
 DEFAULT_METRIC    = "euclidean"
 TEST_SIZE         = 0.20         # 20% per test
 RANDOM_STATE      = 42
-# Numero massimo di punti nell'indice KNN.
-# Con piu' dati, l'indice cresce e la latenza sale: il subsampling
-# risolve questo problema mantenendo lo stesso R2.
-DEFAULT_MAX_INDEX = 1500  # None = usa tutti i campioni di training
+# Numero massimo di punti nell'indice KNN. Aumentato a 5000 per gestire il dataset ampio di 50+ giri.
+DEFAULT_MAX_INDEX = 5000  # None = usa tutti i campioni di training
 
 
 # ─────────────────────────────────────────────
@@ -340,6 +339,20 @@ def main():
     print("\n  Generazione grafici...")
     plot_predictions(results)
     plot_residuals(results)
+
+    # Salvataggio Resoconto JSON
+    report = {
+        "k": k,
+        "max_index": args.max_index if not args.eval_only else "N/A",
+        "results": {
+            col: {"mae": float(res["mae"]), "rmse": float(res["rmse"]), "r2": float(res["r2"])}
+            for col, res in results.items()
+        }
+    }
+    report_path = os.path.join(BASE_DIR, "report_step2.json")
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=4)
+    print(f"\n  Resoconto salvato in: {report_path}")
 
     # Stima latenza inferenza (importante per real-time)
     import time

@@ -22,6 +22,7 @@ import os
 import sys
 import glob
 import pickle
+import json
 
 # Forza stdout UTF-8 su Windows per evitare errori di encoding
 if sys.platform == "win32":
@@ -46,7 +47,7 @@ PLOTS_DIR   = os.path.join(BASE_DIR, "plots")
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(PLOTS_DIR,  exist_ok=True)
 
-# Feature di input per il modello (22 sensori)
+# Feature di input per il modello
 FEATURE_COLS = [
     "angle",
     "trackPos",
@@ -54,6 +55,8 @@ FEATURE_COLS = [
     "speedY",
     "speedZ",
     "rpm",
+    "gear",
+    "wheelSpinVel_0", "wheelSpinVel_1", "wheelSpinVel_2", "wheelSpinVel_3",
     "track_0",  "track_1",  "track_2",  "track_3",  "track_4",
     "track_5",  "track_6",  "track_7",  "track_8",  "track_9",
     "track_10", "track_11", "track_12", "track_13", "track_14",
@@ -103,11 +106,9 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     # Rimuovi NaN
     df = df.dropna(subset=FEATURE_COLS + TARGET_COLS)
 
-    # Rimuovi frame con auto ferma (i primi istanti del giro)
-    df = df[df["speedX"] > 1.0]
-
-    # Rimuovi eventuali frame fuori pista rimasti
-    df = df[df["trackPos"].abs() <= 1.3]
+    # RIMOSSO: Manteniamo i frame a bassa velocità e fuori pista per insegnare il recovery!
+    # df = df[df["speedX"] > 1.0]
+    # df = df[df["trackPos"].abs() <= 1.3]
 
     # Reset indice
     df = df.reset_index(drop=True)
@@ -284,6 +285,18 @@ def main():
     # 5. Normalizzazione
     print("\n[5/5] Normalizzazione e salvataggio scaler...")
     normalize_and_save(df)
+
+    # 6. Salvataggio Resoconto
+    report = {
+        "righe_totali": len(df),
+        "feature_usate": FEATURE_COLS,
+        "medie_target": df[TARGET_COLS].mean().to_dict(),
+        "std_target": df[TARGET_COLS].std().to_dict()
+    }
+    report_path = os.path.join(BASE_DIR, "report_step1.json")
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=4)
+    print(f"\n  Resoconto salvato in: {report_path}")
 
     print("\n" + "=" * 55)
     print(f"  ✓ STEP 1 COMPLETATO")

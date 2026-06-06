@@ -58,6 +58,8 @@ FEATURE_COLS = [
     "speedY",
     "speedZ",
     "rpm",
+    "gear",
+    "wheelSpinVel_0", "wheelSpinVel_1", "wheelSpinVel_2", "wheelSpinVel_3",
     "track_0",  "track_1",  "track_2",  "track_3",  "track_4",
     "track_5",  "track_6",  "track_7",  "track_8",  "track_9",
     "track_10", "track_11", "track_12", "track_13", "track_14",
@@ -165,8 +167,17 @@ class KNNAgent:
         Riceve il dizionario stato TORCS (S.d) e restituisce
         {'steer', 'accel', 'brake'} come float clippati.
         """
+        # Appiattiamo le liste (es. wheelSpinVel -> wheelSpinVel_0, _1, ecc.) come nel CSV
+        flat_state = {}
+        for k, v in state.items():
+            if isinstance(v, list):
+                for i, val in enumerate(v):
+                    flat_state[f"{k}_{i}"] = val
+            else:
+                flat_state[k] = v
+
         # Estrai feature nell'ordine corretto, con fallback a 0.0
-        x = np.array([[state.get(f, 0.0) for f in self.features]])
+        x = np.array([[flat_state.get(f, 0.0) for f in self.features]])
         x = self.scaler.transform(x)
         pred = self.model.predict(x)[0]   # [steer, accel, brake]
 
@@ -308,8 +319,29 @@ def drive_loop(agent: KNNAgent, host: str, port: int,
                 source = "KNN"
                 knn_cnt += 1
 
-            # ── Cambio marce automatico ────────────────────
+            # ── Aiuti alla guida (come nel manual control) ────────────────
             speed = state.get("speedX", 0)
+            steer = action["steer"]
+            accel = action["accel"]
+            brake = action["brake"]
+
+            wheel_vel = state.get('wheelSpinVel', [0,0,0,0])
+            if len(wheel_vel) == 4:
+                # Controllo di trazione (riduce accel se le ruote dietro slittano più di quelle davanti)
+                if (wheel_vel[2]+wheel_vel[3]) - (wheel_vel[0]+wheel_vel[1]) > 15:
+                    accel *= 0.5
+                # ABS base (riduce freno se a bassa velocità c'è rischio di blocco ruote anteriori)
+                if brake > 0.1 and speed > 15 and (wheel_vel[0]+wheel_vel[1])/2.0 < 5:
+                    brake *= 0.1
+
+            # Ripartitore frenata in curva (riduce freno quando si sterza bruscamente)
+            if brake > 0.1 and abs(steer) > 0.15: 
+                brake *= (1.0 - abs(steer)*0.8)
+
+            action["accel"] = accel
+            action["brake"] = brake
+
+            # ── Cambio marce automatico ────────────────────
             current_gear = int(state.get("gear", 1))
             gear = auto_gear(speed, current_gear, action["steer"])
 

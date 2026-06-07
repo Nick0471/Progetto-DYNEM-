@@ -1,5 +1,5 @@
 {
-    "righe_totali": 202099,
+    "righe_totali": 257380,
     "feature_usate": [
         "angle",
         "trackPos",
@@ -33,13 +33,13 @@
         "track_18"
     ],
     "medie_target": {
-        "target_steer": 0.03843043563066435,
-        "target_accel": 0.6442094028710673,
-        "target_brake": 0.04085033348335958
+        "target_steer": 0.041248498703086445,
+        "target_accel": 0.6532102807306059,
+        "target_brake": 0.0405794350486592
     },
     "std_target": {
-        "target_steer": 0.25822874410487817,
-        "target_accel": 0.44145262996094925,
-        "target_brake": 0.15426325020277834
+        "target_steer": 0.27555708519352645,
+        "target_accel": 0.43946464384745554,
+        "target_brake": 0.1516226071517177
     }
 }

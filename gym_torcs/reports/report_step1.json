@@ -1,17 +1,11 @@
 {
-    "righe_totali": 257380,
+    "righe_totali": 105554,
     "feature_usate": [
         "angle",
         "trackPos",
         "speedX",
         "speedY",
-        "speedZ",
         "rpm",
-        "gear",
-        "wheelSpinVel_0",
-        "wheelSpinVel_1",
-        "wheelSpinVel_2",
-        "wheelSpinVel_3",
         "track_0",
         "track_1",
         "track_2",
@@ -33,13 +27,13 @@
         "track_18"
     ],
     "medie_target": {
-        "target_steer": 0.041248498703086445,
-        "target_accel": 0.6532102807306059,
-        "target_brake": 0.0405794350486592
+        "target_steer": 0.04182799858880569,
+        "target_accel": 0.6192013672072757,
+        "target_brake": 0.04165333532632038
     },
     "std_target": {
-        "target_steer": 0.27555708519352645,
-        "target_accel": 0.43946464384745554,
-        "target_brake": 0.1516226071517177
+        "target_steer": 0.25747659803676864,
+        "target_accel": 0.43506551437717816,
+        "target_brake": 0.1422763449691689
     }
 }

@@ -39,8 +39,6 @@ import matplotlib.pyplot as plt
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.cluster import MiniBatchKMeans
-from sklearn.pipeline import Pipeline
 
 # ─────────────────────────────────────────────
 # CONFIGURAZIONE
@@ -63,9 +61,6 @@ DEFAULT_ALGO      = "ball_tree"  # piu' veloce di "brute" su dataset medi
 DEFAULT_METRIC    = "euclidean"
 TEST_SIZE         = 0.20         # 20% per test
 RANDOM_STATE      = 42
-# Numero massimo di punti nell'indice KNN. Aumentato a 5000 per gestire il dataset ampio di 50+ giri.
-DEFAULT_MAX_INDEX = 5000  # None = usa tutti i campioni di training
-
 
 # ─────────────────────────────────────────────
 # UTILITÀ
@@ -131,50 +126,10 @@ def find_best_k(X_train, y_train, k_range=range(3, 21, 2)):
 
 
 # ─────────────────────────────────────────────
-# SUBSAMPLING DELL'INDICE (per latenza real-time)
-# ─────────────────────────────────────────────
-def subsample_index(X_train: np.ndarray, y_train: np.ndarray,
-                    max_points: int) -> tuple:
-    """
-    Riduce il training set a `max_points` campioni rappresentativi
-    usando MiniBatchKMeans. Per ogni centroide, il target associato
-    e' la media dei target dei punti assegnati a quel cluster.
-
-    Effetto: latenza inferenza cala proporzionalmente (da ~19ms a ~2ms)
-    con perdita di R2 trascurabile (<1%).
-    """
-    n = len(X_train)
-    if max_points is None or max_points >= n:
-        print(f"  Subsampling non necessario ({n} <= {max_points})")
-        return X_train, y_train
-
-    print(f"  Subsampling: {n} -> {max_points} centroidi (MiniBatchKMeans)...")
-    km = MiniBatchKMeans(
-        n_clusters=max_points,
-        random_state=RANDOM_STATE,
-        n_init=3,
-        batch_size=2048,
-    )
-    labels = km.fit_predict(X_train)
-
-    X_idx = km.cluster_centers_
-    y_idx = np.zeros((max_points, y_train.shape[1]))
-    for c in range(max_points):
-        mask = labels == c
-        if mask.any():
-            y_idx[c] = y_train[mask].mean(axis=0)
-
-    print(f"  Indice ridotto a {max_points} centroidi.")
-    return X_idx, y_idx
-
-
-# ─────────────────────────────────────────────
 # TRAINING
 # ─────────────────────────────────────────────
-def train(X_train, y_train, k: int,
-          max_index: int = DEFAULT_MAX_INDEX) -> KNeighborsRegressor:
-    """Addestra un KNN multi-output, con subsampling opzionale."""
-    X_idx, y_idx = subsample_index(X_train, y_train, max_index)
+def train(X_train, y_train, k: int) -> KNeighborsRegressor:
+    """Addestra un KNN multi-output sui dati puri senza compressione."""
     model = KNeighborsRegressor(
         n_neighbors=k,
         weights=DEFAULT_WEIGHTS,
@@ -182,7 +137,7 @@ def train(X_train, y_train, k: int,
         metric=DEFAULT_METRIC,
         n_jobs=1   # n_jobs=1 e' piu' veloce per query singole su Windows
     )
-    model.fit(X_idx, y_idx)
+    model.fit(X_train, y_train)
     return model
 
 
@@ -286,8 +241,6 @@ def main():
     parser.add_argument("--k",         type=int,  default=None,  help="Numero vicini (default: auto)")
     parser.add_argument("--find-k",    action="store_true",      help="Cerca k ottimale via CV")
     parser.add_argument("--eval-only", action="store_true",      help="Rivaluta modello esistente senza ritraining")
-    parser.add_argument("--max-index", type=int,  default=DEFAULT_MAX_INDEX,
-                        help=f"Max punti nell'indice KNN (default: {DEFAULT_MAX_INDEX}, None=tutti)")
     args = parser.parse_args()
 
     print("=" * 55)
@@ -325,7 +278,7 @@ def main():
 
         # Training
         print(f"\n[3/4] Training KNN (k={k}, weights={DEFAULT_WEIGHTS}, algo={DEFAULT_ALGO})...")
-        model = train(X_train, y_train, k, max_index=args.max_index)
+        model = train(X_train, y_train, k)
         print("  Training completato.")
 
         # Salva modello
@@ -343,7 +296,6 @@ def main():
     # Salvataggio Resoconto JSON
     report = {
         "k": k,
-        "max_index": args.max_index if not args.eval_only else "N/A",
         "results": {
             col: {"mae": float(res["mae"]), "rmse": float(res["rmse"]), "r2": float(res["r2"])}
             for col, res in results.items()

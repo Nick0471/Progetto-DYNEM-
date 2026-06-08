@@ -23,6 +23,7 @@ import sys
 import glob
 import pickle
 import json
+import argparse
 
 # Forza stdout UTF-8 su Windows per evitare errori di encoding
 if sys.platform == "win32":
@@ -53,10 +54,7 @@ FEATURE_COLS = [
     "trackPos",
     "speedX",
     "speedY",
-    "speedZ",
     "rpm",
-    "gear",
-    "wheelSpinVel_0", "wheelSpinVel_1", "wheelSpinVel_2", "wheelSpinVel_3",
     "track_0",  "track_1",  "track_2",  "track_3",  "track_4",
     "track_5",  "track_6",  "track_7",  "track_8",  "track_9",
     "track_10", "track_11", "track_12", "track_13", "track_14",
@@ -106,9 +104,9 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     # Rimuovi NaN
     df = df.dropna(subset=FEATURE_COLS + TARGET_COLS)
 
-    # RIMOSSO: Manteniamo i frame a bassa velocità e fuori pista per insegnare il recovery!
-    # df = df[df["speedX"] > 1.0]
-    # df = df[df["trackPos"].abs() <= 1.3]
+    # Rimuoviamo i frame a bassa velocità (es. il countdown iniziale dove non premi l'acceleratore)
+    df = df[df["speedX"] > 1.0]
+    df = df[df["trackPos"].abs() <= 1.3]
 
     # Reset indice
     df = df.reset_index(drop=True)
@@ -117,6 +115,42 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     print(f"  Righe rimosse durante pulizia: {n_removed}  ({n_removed/n_start*100:.1f}%)")
     print(f"  Righe finali nel dataset pulito: {len(df)}")
     return df
+
+
+# ─────────────────────────────────────────────
+# 2.5 BILANCIAMENTO
+# ─────────────────────────────────────────────
+def balance_data(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Bilancia i dati: sottocampiona le righe in rettilineo (|steer|<0.05) 
+    per eguagliare il numero di righe in curva.
+    """
+    n_start = len(df)
+    
+    straight_mask = df["target_steer"].abs() < 0.05
+    df_straight = df[straight_mask]
+    df_curve    = df[~straight_mask]
+    
+    n_straight = len(df_straight)
+    n_curve    = len(df_curve)
+    
+    print(f"  Analisi traiettorie iniziali: {n_straight} in rettilineo, {n_curve} in curva.")
+    
+    # Invece di cancellare i rettilinei, diamo un "peso" alle curve clonandole (oversampling).
+    # Ad esempio, facciamo in modo che le curve siano il 10% in più rispetto ai rettilinei.
+    target_curve = int(n_straight * 1.1)
+    
+    if target_curve > n_curve:
+        # Clona alcune curve per raggiungere il target (peso maggiore)
+        df_curve = df_curve.sample(n=target_curve, replace=True, random_state=42)
+        print(f"  Curve 'pesate' (oversampling): portate da {n_curve} a {target_curve} per avere maggiore priorità.")
+        
+    # Non scartiamo nessun rettilineo, li teniamo tutti intatti!
+        
+    df_balanced = pd.concat([df_straight, df_curve]).sample(frac=1.0, random_state=42).reset_index(drop=True)
+    
+    print(f"  Righe finali nel dataset bilanciato: {len(df_balanced)} (da {n_start} iniziali)")
+    return df_balanced
 
 
 # ─────────────────────────────────────────────
@@ -251,6 +285,9 @@ def normalize_and_save(df: pd.DataFrame):
 # MAIN
 # ─────────────────────────────────────────────
 def main():
+    parser = argparse.ArgumentParser(description="Preparazione dati per TORCS")
+    args = parser.parse_args()
+
     print("=" * 55)
     print("  STEP 1 – Preparazione Dataset")
     print("=" * 55)
@@ -268,9 +305,12 @@ def main():
     print("\n[2/5] Pulizia dati...")
     df = clean_data(df_raw)
 
+    print("\n[2.5/5] Bilanciamento...")
+    df = balance_data(df)
+
     clean_path = os.path.join(MODELS_DIR, "dataset_clean.csv")
     df.to_csv(clean_path, index=False)
-    print(f"  Dataset pulito salvato: {clean_path}")
+    print(f"  Dataset pulito e bilanciato salvato: {clean_path}")
 
     # 3. Statistiche
     print("\n[3/5] Statistiche descrittive...")

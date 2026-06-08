@@ -2,10 +2,9 @@ import os
 import sys
 import glob
 import json
-import numpy as np
+import re
+import argparse
 import pandas as pd
-from scipy.spatial.distance import euclidean
-from itertools import combinations
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -16,98 +15,155 @@ REPORTS_DIR = os.path.join(BASE_DIR, "reports")
 
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
-def extract_lap_profile(filepath, num_points=200):
-    """
-    Estrae il profilo del giro e lo ricampiona a una lunghezza fissa 
-    per permettere il confronto tra giri che hanno una durata (numero di step) diversa.
-    Usiamo 'trackPos' e 'speedX' come firma del giro.
-    """
-    df = pd.read_csv(filepath)
-    if len(df) < 100:
-        return None  # Salta giri troppo brevi
-        
-    # Estraiamo le colonne chiave
-    track_pos = df['trackPos'].values
-    speed_x = df['speedX'].values
-    
-    # Creiamo un asse temporale normalizzato da 0 a 1
-    x_old = np.linspace(0, 1, len(df))
-    x_new = np.linspace(0, 1, num_points)
-    
-    # Interpolazione per portare tutti i giri a `num_points` lunghezze
-    track_pos_resampled = np.interp(x_new, x_old, track_pos)
-    speed_x_resampled = np.interp(x_new, x_old, speed_x)
-    
-    # Concateniamo i due array per avere una singola "firma" per il giro
-    # Normalizziamo le feature per far s\u00ec che abbiano peso simile
-    tp_norm = (track_pos_resampled - np.mean(track_pos_resampled)) / (np.std(track_pos_resampled) + 1e-6)
-    sp_norm = (speed_x_resampled - np.mean(speed_x_resampled)) / (np.std(speed_x_resampled) + 1e-6)
-    
-    profile = np.concatenate([tp_norm, sp_norm])
-    return profile
+def parse_time_from_filename(filename: str) -> float:
+    """Estrae il tempo dal nome del file e lo converte in secondi decimali."""
+    # Esempio: lap_001_time_01-09-563_20260528_173959.csv
+    match = re.search(r'time_(\d+)-(\d+)-(\d+)', filename)
+    if match:
+        mins = int(match.group(1))
+        secs = int(match.group(2))
+        mils = int(match.group(3))
+        return (mins * 60) + secs + (mils / 1000.0)
+    return None
+
+def is_lap_clean(filepath: str) -> bool:
+    """Verifica che il giro non contenga fuoripista (trackPos > 1.3)."""
+    try:
+        df = pd.read_csv(filepath)
+        if len(df) < 100:
+            return False
+        # Controlliamo se c'è almeno un frame in cui si è usciti di pista
+        if (df['trackPos'].abs() > 1.3).any():
+            return False
+        return True
+    except Exception as e:
+        print(f"Errore nella lettura di {filepath}: {e}")
+        return False
 
 def main():
+    parser = argparse.ArgumentParser(description="Analisi e Pulizia Giri per Tempo")
+    parser.add_argument("--tolerance", type=float, default=2.0, 
+                        help="Tolleranza in secondi (default: 2.0)")
+    parser.add_argument("--target-time", type=float, default=None, 
+                        help="Tempo target in secondi (es. 70.0 per 1:10). Se specificato, cerca giri entro +/- tolerance.")
+    parser.add_argument("--delete", action="store_true", 
+                        help="Elimina fisicamente i file dei giri scartati")
+    args = parser.parse_args()
+
     print("=" * 60)
-    print("  ANALISI SIMILARIT\u00c0 DATASET")
+    print("  ANALISI TEMPI SUL GIRO E PULIZIA DATASET")
     print("=" * 60)
     
     files = sorted(glob.glob(os.path.join(DATASET_DIR, "*.csv")))
     print(f"Trovati {len(files)} file CSV nel dataset.\n")
     
-    profiles = {}
+    if not files:
+        print("Nessun file trovato.")
+        return
+
+    laps_info = []
     
-    # 1. Estrazione dei profili
-    print("Estrazione profili in corso...")
+    print("Analisi dei file in corso (estrazione tempi e controllo fuoripista)...")
     for f in files:
         filename = os.path.basename(f)
-        prof = extract_lap_profile(f)
-        if prof is not None:
-            profiles[filename] = prof
-            
-    # 2. Calcolo similarit\u00e0 (distanza a coppie)
-    print("Calcolo similarit\u00e0 tra i giri...")
-    filenames = list(profiles.keys())
-    similar_pairs = []
-    
-    # Soglia empirica: due giri sono considerati "molto simili" se la distanza
-    # Euclidea normalizzata tra le loro firme \u00e8 al di sotto di questo valore.
-    THRESHOLD = 15.0 
-    
-    for f1, f2 in combinations(filenames, 2):
-        dist = euclidean(profiles[f1], profiles[f2])
+        lap_time = parse_time_from_filename(filename)
         
-        # Trasformiamo la distanza in una "percentuale" di similarit\u00e0 approssimativa
-        # (E' un valore indicativo, basato sulla dimensione dell'array)
-        max_dist = 40.0 
-        sim_score = max(0, 100 * (1 - (dist / max_dist)))
-        
-        if sim_score > 90.0:  # Pi\u00f9 del 90% di similarit\u00e0
-            similar_pairs.append({
-                "file_1": f1,
-                "file_2": f2,
-                "similarita_perc": round(sim_score, 2),
-                "distanza": round(dist, 4)
-            })
+        if lap_time is None:
+            continue
             
-    # Ordiniamo i risultati per similarit\u00e0 (dal pi\u00f9 simile al meno)
-    similar_pairs = sorted(similar_pairs, key=lambda x: x["similarita_perc"], reverse=True)
+        clean = is_lap_clean(f)
+        
+        laps_info.append({
+            "filepath": f,
+            "filename": filename,
+            "time": lap_time,
+            "clean": clean
+        })
+
+    # Trova il giro di riferimento
+    if args.target_time is not None:
+        baseline_time = args.target_time
+        fastest_lap_name = "Target Personalizzato"
+        print(f"\n[+] Giro di riferimento: {fastest_lap_name}")
+        print(f"    Tempo impostato: {baseline_time:.3f} sec")
+        print(f"    Range accettato: da {baseline_time - args.tolerance:.3f}s a {baseline_time + args.tolerance:.3f}s (±{args.tolerance}s)")
+    else:
+        clean_laps = [lap for lap in laps_info if lap["clean"]]
+        if not clean_laps:
+            print("ERRORE: Nessun giro 'pulito' (senza fuoripista) trovato nel dataset!")
+            return
+            
+        # Usa la MEDIA dei tempi invece del giro più veloce
+        import numpy as np
+        baseline_time = float(np.mean([lap["time"] for lap in clean_laps]))
+        fastest_lap_name = "Media dei Tempi"
+        
+        print(f"\n[+] Giro di riferimento (Media matematica): {fastest_lap_name}")
+        print(f"    Tempo medio calcolato: {baseline_time:.3f} sec")
+        print(f"    Range accettato: da {baseline_time - args.tolerance:.3f}s a {baseline_time + args.tolerance:.3f}s (±{args.tolerance}s)")
     
-    # 3. Generazione Report
+    # Classificazione
+    kept_laps = []
+    discarded_laps = []
+    
+    for lap in laps_info:
+        if args.target_time is not None:
+            # Accetta nel range [target - tolerance, target + tolerance]
+            if lap["clean"] and abs(lap["time"] - baseline_time) <= args.tolerance:
+                kept_laps.append(lap)
+            else:
+                reason = "Fuoripista rilevato" if not lap["clean"] else f"Fuori target di {abs(lap['time'] - baseline_time):.3f}s"
+                lap["reason"] = reason
+                discarded_laps.append(lap)
+        else:
+            # Accetta nel range [media - tolerance, media + tolerance]
+            if lap["clean"] and abs(lap["time"] - baseline_time) <= args.tolerance:
+                kept_laps.append(lap)
+            else:
+                diff = lap['time'] - baseline_time
+                reason = "Fuoripista rilevato" if not lap["clean"] else f"Fuori media ({'+' if diff>0 else ''}{diff:.3f}s)"
+                lap["reason"] = reason
+                discarded_laps.append(lap)
+            
+    print("\n── RISULTATI ──────────────────────────────────────────")
+    print(f"Giri BUONI mantenuti : {len(kept_laps)}")
+    print(f"Giri SCARTATI        : {len(discarded_laps)}")
+    
+    if discarded_laps:
+        print("\nDettaglio giri scartati:")
+        for lap in discarded_laps:
+            print(f"  - {lap['filename']}  [{lap['time']:.3f}s] -> {lap['reason']}")
+            
+    # Generazione Report
     report = {
-        "info_generali": {
-            "csv_totali_analizzati": len(profiles),
-            "csv_troppo_corti_scartati": len(files) - len(profiles)
-        },
-        "giri_simili_trovati": len(similar_pairs),
-        "dettagli_similarita": similar_pairs
+        "baseline_time_sec": baseline_time,
+        "reference": fastest_lap_name,
+        "tolerance_sec": args.tolerance,
+        "total_laps": len(laps_info),
+        "kept_laps": len(kept_laps),
+        "discarded_laps": len(discarded_laps),
+        "discarded_details": [{"file": l["filename"], "reason": l["reason"]} for l in discarded_laps]
     }
     
-    report_path = os.path.join(REPORTS_DIR, "dataset_similarity_report.json")
+    report_path = os.path.join(REPORTS_DIR, "lap_times_report.json")
     with open(report_path, "w") as f:
         json.dump(report, f, indent=4)
+    print(f"\nReport completo salvato in: {report_path}")
+    
+    # Eliminazione
+    if args.delete and discarded_laps:
+        print(f"\n[!] ELIMINAZIONE IN CORSO di {len(discarded_laps)} file...")
+        deleted_count = 0
+        for lap in discarded_laps:
+            try:
+                os.remove(lap["filepath"])
+                deleted_count += 1
+            except Exception as e:
+                print(f"Errore nell'eliminazione di {lap['filename']}: {e}")
+        print(f"Eliminati con successo {deleted_count} file.")
+    elif discarded_laps and not args.delete:
+        print("\n[i] Nessun file è stato eliminato. Usa '--delete' per cancellare fisicamente i file scartati.")
         
-    print(f"\n[!] Trovate {len(similar_pairs)} coppie di giri estremamente simili (>90%).")
-    print(f"Report completo salvato in: {report_path}")
     print("=" * 60)
 
 if __name__ == "__main__":

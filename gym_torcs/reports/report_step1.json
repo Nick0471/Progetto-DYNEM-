@@ -1,11 +1,11 @@
 {
-    "righe_totali": 105554,
+    "righe_totali": 98283,
     "feature_usate": [
         "angle",
         "trackPos",
         "speedX",
         "speedY",
-        "rpm",
+        "wsv_avg",
         "track_0",
         "track_1",
         "track_2",
@@ -27,13 +27,13 @@
         "track_18"
     ],
     "medie_target": {
-        "target_steer": 0.04182799858880569,
-        "target_accel": 0.6192013672072757,
-        "target_brake": 0.04165333532632038
+        "target_steer": 0.044103962069765947,
+        "target_accel": 0.7036900200744886,
+        "target_brake": 0.04509600087269544
     },
     "std_target": {
-        "target_steer": 0.25747659803676864,
-        "target_accel": 0.43506551437717816,
-        "target_brake": 0.1422763449691689
+        "target_steer": 0.2603147633440671,
+        "target_accel": 0.42426873672764165,
+        "target_brake": 0.15722137257547772
     }
 }

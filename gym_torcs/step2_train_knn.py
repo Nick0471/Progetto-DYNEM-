@@ -37,7 +37,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn.neighbors import KNeighborsRegressor
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import train_test_split, cross_val_score, GroupShuffleSplit, GroupKFold
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # ─────────────────────────────────────────────
@@ -91,16 +91,18 @@ def prepare_xy(df: pd.DataFrame, features: list, scaler):
     X_raw = df[features].values
     y     = df[TARGET_COLS].values
     X     = scaler.transform(X_raw)
-    return X, y
+    groups = df["_source_file"].values if "_source_file" in df.columns else None
+    return X, y, groups
 
 
 # ─────────────────────────────────────────────
 # RICERCA AUTOMATICA DI K (opzionale)
 # ─────────────────────────────────────────────
-def find_best_k(X_train, y_train, k_range=range(3, 21, 2)):
+def find_best_k(X_train, y_train, groups_train=None, k_range=range(3, 15, 2)):
     """
     Valuta vari valori di k tramite cross-validation (3-fold)
     sul solo sterzo (il target più critico) e restituisce il migliore.
+    Se sono disponibili i gruppi (source_file), usa GroupKFold.
     """
     print("  Ricerca del k ottimale via 3-fold CV (steer)...")
     best_k, best_score = DEFAULT_K, -np.inf
@@ -113,8 +115,12 @@ def find_best_k(X_train, y_train, k_range=range(3, 21, 2)):
             metric=DEFAULT_METRIC,
             n_jobs=-1
         )
-        scores = cross_val_score(model, X_train, y_train[:, 0],
-                                  cv=3, scoring="r2", n_jobs=-1)
+        
+        cv_strategy = GroupKFold(n_splits=3) if groups_train is not None else 3
+        
+        scores = cross_val_score(model, X_train, y_train[:, 0], 
+                                 groups=groups_train, cv=cv_strategy, 
+                                 scoring="r2", n_jobs=-1)
         mean_r2 = scores.mean()
         print(f"    k={k:>2}  R²_steer={mean_r2:.4f}")
         if mean_r2 > best_score:
@@ -252,12 +258,22 @@ def main():
     df, scaler, features = load_artifacts()
 
     # Prepara X, y
-    X, y = prepare_xy(df, features, scaler)
+    X, y, groups = prepare_xy(df, features, scaler)
 
     # Split train/test
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE
-    )
+    if groups is not None:
+        print("\n[!] Split per giri interi per prevenire Data Leakage (GroupShuffleSplit).")
+        gss = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=RANDOM_STATE)
+        train_idx, test_idx = next(gss.split(X, y, groups=groups))
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+        groups_train = groups[train_idx]
+    else:
+        print("\n[!] Colonna _source_file mancante, fallback su train_test_split casuale.")
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE
+        )
+        groups_train = None
     print(f"  Train: {len(X_train)} campioni  |  Test: {len(X_test)} campioni")
 
     if args.eval_only:
@@ -270,8 +286,8 @@ def main():
             k = args.k
             print(f"\n[2/4] k={k} (specificato dall'utente)")
         elif args.find_k:
-            print("\n[2/4] Ricerca automatica del k ottimale...")
-            k = find_best_k(X_train, y_train)
+            print("\n[2/4] Ricerca automatica del k ottimale (con GroupKFold)...")
+            k = find_best_k(X_train, y_train, groups_train=groups_train)
         else:
             k = DEFAULT_K
             print(f"\n[2/4] k={k} (default)")

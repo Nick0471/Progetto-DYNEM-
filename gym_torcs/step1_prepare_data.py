@@ -54,7 +54,7 @@ FEATURE_COLS = [
     "trackPos",
     "speedX",
     "speedY",
-    "rpm",
+    "wsv_avg",
     "track_0",  "track_1",  "track_2",  "track_3",  "track_4",
     "track_5",  "track_6",  "track_7",  "track_8",  "track_9",
     "track_10", "track_11", "track_12", "track_13", "track_14",
@@ -81,17 +81,148 @@ def load_all_laps(folder: str) -> pd.DataFrame:
     for fp in files:
         df = pd.read_csv(fp)
         df["_source_file"] = os.path.basename(fp)   # traccia l'origine
+        
+        # Ricrea distFromStart integrando la velocità sul tempo
+        if "timestamp" in df.columns and "speedX" in df.columns:
+            # dt è la differenza di tempo tra i frame. Fallback a 0.02s per il primo frame.
+            dt = df["timestamp"].diff().fillna(0.02)
+            # speedX è in km/h. Per avere i metri: (km/h) / 3.6 = m/s
+            df["distFromStart"] = (df["speedX"] / 3.6 * dt).cumsum()
+            
         frames.append(df)
         print(f"  [{os.path.basename(fp)}] -> {len(df):>5} righe")
 
     merged = pd.concat(frames, ignore_index=True)
+    wsv_cols = ["wheelSpinVel_0", "wheelSpinVel_1", "wheelSpinVel_2", "wheelSpinVel_3"]
+    if all(c in merged.columns for c in wsv_cols):
+        merged["wsv_avg"] = merged[wsv_cols].mean(axis=1)
     print(f"\n  Totale righe dopo unione: {len(merged)}")
     return merged
 
 
 # ─────────────────────────────────────────────
-# 2. PULIZIA DEI DATI
+# 2. PULIZIA DEI DATI E GIRI D'ORO
 # ─────────────────────────────────────────────
+import re
+
+def extract_golden_laps(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Estrae i giri valutando la coerenza della TRAIETTORIA e bilanciando le velocità.
+    - Prende i migliori 20 giri veloci (<= 70 sec)
+    - Prende i migliori 12 giri lenti (> 70 sec, ottimi per recovery)
+    Entrambi valutati in base all'aderenza alla traiettoria ideale dei giri veloci.
+    """
+    n_start = len(df["_source_file"].unique())
+    
+    # 1. Scarta giri con fuori pista esagerati (allentato a 1.3 per non scartare i recovery utili)
+    dirty_files = df[df["trackPos"].abs() > 1.3]["_source_file"].unique()
+    df_valid = df[~df["_source_file"].isin(dirty_files)].copy()
+    n_valid = len(df_valid["_source_file"].unique())
+    
+    # Estraiamo i tempi dai nomi dei file
+    def parse_time(filename):
+        match = re.search(r"time_(\d{2})-(\d{2})-(\d{3})", filename)
+        if match:
+            m, s, ms = match.groups()
+            return int(m) * 60 + int(s) + int(ms) / 1000.0
+        return 999.0
+
+    lap_times = {f: parse_time(f) for f in df_valid["_source_file"].unique()}
+    
+    if "distFromStart" not in df_valid.columns:
+        print("  [!] distFromStart non trovato. Fallback su speedX disabilitato per questa logica avanzata.")
+        return df_valid
+        
+    # 2. Crea una "Firma della Traiettoria" per ogni giro
+    df_valid["dist_bin"] = (df_valid["distFromStart"] // 20).astype(int)
+    
+    traj_matrix = df_valid.pivot_table(
+        index="_source_file", columns="dist_bin", values="trackPos", aggfunc="mean"
+    )
+    traj_matrix = traj_matrix.interpolate(axis=1, limit_direction="both").fillna(0)
+    
+    # 3. Troviamo la traiettoria "Ideale" basandoci SOLO sui giri veloci (la vera racing line)
+    fast_files = [f for f, t in lap_times.items() if t <= 70.0 and f in traj_matrix.index]
+    slow_files = [f for f, t in lap_times.items() if t > 70.0 and f in traj_matrix.index]
+    
+    if len(fast_files) > 0:
+        median_trajectory = traj_matrix.loc[fast_files].median(axis=0)
+    else:
+        median_trajectory = traj_matrix.median(axis=0)
+    
+    # 4. Calcoliamo lo scostamento (MSE) di ogni giro dalla traiettoria ideale dei giri veloci
+    mse_trajectory = ((traj_matrix - median_trajectory) ** 2).mean(axis=1)
+    
+    # 5. Selezioniamo i 20 migliori veloci e i 10 migliori lenti
+    top_fast = mse_trajectory.loc[fast_files].sort_values().head(20).index.tolist()
+    top_slow = mse_trajectory.loc[slow_files].sort_values().head(10).index.tolist()
+    
+    closest_laps = top_fast + top_slow
+    
+    # Pulizia colonna temporanea
+    df_valid = df_valid.drop(columns=["dist_bin"])
+    
+    df_golden = df_valid[df_valid["_source_file"].isin(closest_laps)].reset_index(drop=True)
+    
+    print(f"  Giri validi iniziali: {n_valid} su {n_start} totali.")
+    print(f"  Estrazione Traiettorie d'Oro:")
+    print(f"  - Giri veloci (<= 70s) selezionati: {len(top_fast)}")
+    print(f"  - Giri lenti  (> 70s) selezionati:  {len(top_slow)}")
+    print(f"  - Totale righe finali: {len(df_golden)}")
+    
+    import matplotlib.pyplot as plt
+    import os
+    
+    # --- 1. SALVATAGGIO LOG ---
+    reports_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
+    os.makedirs(reports_dir, exist_ok=True)
+    log_path = os.path.join(reports_dir, "golden_laps.txt")
+    with open(log_path, "w") as f:
+        f.write("=== FAST LAPS (<= 70s) ===\n")
+        for lap in top_fast:
+            f.write(f"{lap} (MSE: {mse_trajectory[lap]:.4f})\n")
+        f.write("\n=== SLOW / RECOVERY LAPS (> 70s) ===\n")
+        for lap in top_slow:
+            f.write(f"{lap} (MSE: {mse_trajectory[lap]:.4f})\n")
+    print(f"  Lista dei file estratti salvata in: {log_path}")
+    
+    # --- 2. PLOT DELLE TRAIETTORIE ---
+    plt.figure(figsize=(12, 5))
+    plt.title("Traiettorie dei Giri d'Oro Selezionati", fontsize=14, fontweight="bold")
+    
+    # Traccia veloci
+    for i, lap in enumerate(top_fast):
+        label = "Veloci" if i == 0 else ""
+        plt.plot(traj_matrix.columns * 20, traj_matrix.loc[lap], color="#22c55e", alpha=0.3, linewidth=1.0, label=label)
+        
+    # Traccia lenti
+    for i, lap in enumerate(top_slow):
+        label = "Lenti/Recovery" if i == 0 else ""
+        plt.plot(traj_matrix.columns * 20, traj_matrix.loc[lap], color="#f59e0b", alpha=0.7, linewidth=1.5, label=label)
+        
+    # Traccia Ideale
+    plt.plot(median_trajectory.index * 20, median_trajectory.values, color="black", linestyle="--", linewidth=2.5, label="Racing Line (Mediana)")
+    
+    plt.axhline(0, color="gray", linewidth=0.8, linestyle=":")
+    plt.axhline(1.0, color="red", linewidth=0.8, linestyle=":", label="Cordolo")
+    plt.axhline(-1.0, color="red", linewidth=0.8, linestyle=":")
+    
+    plt.xlabel("Distanza percorsa (metri)")
+    plt.ylabel("Posizione in pista (trackPos)")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    
+    plots_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+    out_plot = os.path.join(plots_dir, "eda_golden_trajectories.png")
+    plt.savefig(out_plot, dpi=120)
+    plt.close()
+    print(f"  Grafico sovrapposto salvato in: {out_plot}")
+    
+    return df_golden
+
+
 def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     Rimuove righe problematiche:
@@ -104,8 +235,9 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     # Rimuovi NaN
     df = df.dropna(subset=FEATURE_COLS + TARGET_COLS)
 
-    # Rimuoviamo i frame a bassa velocità (es. il countdown iniziale dove non premi l'acceleratore)
-    df = df[df["speedX"] > 1.0]
+    # Rimuoviamo i frame a bassa velocità (es. il countdown iniziale dove non premi l'acceleratore) e sbandate
+    df = df[df["speedX"] > 5.0]
+    df = df[(df["angle"] > -0.5) & (df["angle"] < 0.5)]
     df = df[df["trackPos"].abs() <= 1.3]
 
     # Reset indice
@@ -122,8 +254,8 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 # ─────────────────────────────────────────────
 def balance_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Bilancia i dati: sottocampiona le righe in rettilineo (|steer|<0.05) 
-    per eguagliare il numero di righe in curva.
+    Bilancia i dati: mantieni tutte le curve e fai undersampling dei rettilinei
+    affinché non superino di 1.5 volte il numero delle curve.
     """
     n_start = len(df)
     
@@ -136,16 +268,10 @@ def balance_data(df: pd.DataFrame) -> pd.DataFrame:
     
     print(f"  Analisi traiettorie iniziali: {n_straight} in rettilineo, {n_curve} in curva.")
     
-    # Invece di cancellare i rettilinei, diamo un "peso" alle curve clonandole (oversampling).
-    # Ad esempio, facciamo in modo che le curve siano il 10% in più rispetto ai rettilinei.
-    target_curve = int(n_straight * 1.1)
-    
-    if target_curve > n_curve:
-        # Clona alcune curve per raggiungere il target (peso maggiore)
-        df_curve = df_curve.sample(n=target_curve, replace=True, random_state=42)
-        print(f"  Curve 'pesate' (oversampling): portate da {n_curve} a {target_curve} per avere maggiore priorità.")
-        
-    # Non scartiamo nessun rettilineo, li teniamo tutti intatti!
+    max_straight = int(n_curve * 1.5)
+    if n_straight > max_straight:
+        df_straight = df_straight.sample(n=max_straight, random_state=42)
+        print(f"  Rettilinei sottocampionati da {n_straight} a {max_straight}.")
         
     df_balanced = pd.concat([df_straight, df_curve]).sample(frac=1.0, random_state=42).reset_index(drop=True)
     
@@ -295,6 +421,9 @@ def main():
     # 1. Carica
     print("\n[1/5] Caricamento CSV da dataset_laps/...")
     df_raw = load_all_laps(DATASET_DIR)
+
+    print("\n[1.5/5] Estrazione Giri d'Oro...")
+    df_raw = extract_golden_laps(df_raw)
 
     # Salva merged grezzo
     merged_path = os.path.join(MODELS_DIR, "dataset_merged.csv")

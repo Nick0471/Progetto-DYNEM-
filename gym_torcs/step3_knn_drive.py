@@ -56,10 +56,7 @@ FEATURE_COLS = [
     "trackPos",
     "speedX",
     "speedY",
-    "speedZ",
-    "rpm",
-    "gear",
-    "wheelSpinVel_0", "wheelSpinVel_1", "wheelSpinVel_2", "wheelSpinVel_3",
+    "wsv_avg",
     "track_0",  "track_1",  "track_2",  "track_3",  "track_4",
     "track_5",  "track_6",  "track_7",  "track_8",  "track_9",
     "track_10", "track_11", "track_12", "track_13", "track_14",
@@ -176,15 +173,20 @@ class KNNAgent:
             else:
                 flat_state[k] = v
 
+        if "wheelSpinVel" in state and len(state["wheelSpinVel"]) == 4:
+            flat_state["wsv_avg"] = sum(state["wheelSpinVel"]) / 4.0
+        else:
+            flat_state["wsv_avg"] = 0.0
+
         # Estrai feature nell'ordine corretto, con fallback a 0.0
         x = np.array([[flat_state.get(f, 0.0) for f in self.features]])
         x = self.scaler.transform(x)
         pred = self.model.predict(x)[0]   # [steer, accel, brake]
 
         return {
-            "steer": float(np.clip(pred[0], -1.0,  1.0)),
-            "accel": float(np.clip(pred[1],  0.0,  1.0)),
-            "brake": float(np.clip(pred[2],  0.0,  1.0)),
+            "steer":  float(np.clip(pred[0], -1.0,  1.0)),
+            "accel":  float(np.clip(pred[1],  0.0,  1.0)),
+            "brake":  float(np.clip(pred[2],  0.0,  1.0)),
         }
 
 

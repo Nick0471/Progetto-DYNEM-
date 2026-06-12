@@ -1,0 +1,39 @@
+{
+    "righe_totali": 91477,
+    "feature_usate": [
+        "angle",
+        "trackPos",
+        "speedX",
+        "speedY",
+        "wsv_avg",
+        "track_0",
+        "track_1",
+        "track_2",
+        "track_3",
+        "track_4",
+        "track_5",
+        "track_6",
+        "track_7",
+        "track_8",
+        "track_9",
+        "track_10",
+        "track_11",
+        "track_12",
+        "track_13",
+        "track_14",
+        "track_15",
+        "track_16",
+        "track_17",
+        "track_18"
+    ],
+    "medie_target": {
+        "target_steer": 0.04335547950034901,
+        "target_accel": 0.7023592773278702,
+        "target_brake": 0.045244085890365104
+    },
+    "std_target": {
+        "target_steer": 0.26083142785622476,
+        "target_accel": 0.4243529892533439,
+        "target_brake": 0.15724696990990922
+    }
+}
